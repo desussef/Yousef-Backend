@@ -1,7 +1,6 @@
 import 'dotenv/config'
 import crypto from 'node:crypto'
 import path from 'node:path'
-import fs from 'node:fs/promises'
 import express from 'express'
 import pg from 'pg'
 import argon2 from 'argon2'
@@ -12,6 +11,7 @@ import cookieParser from 'cookie-parser'
 import multer from 'multer'
 import nodemailer from 'nodemailer'
 import { z } from 'zod'
+import { storeMedia } from './mediaStorage.js'
 
 const isProduction = process.env.APP_ENV === 'production'
 const required = ['DATABASE_URL'].filter((key) => !process.env[key])
@@ -113,7 +113,13 @@ function hasExpectedFileSignature(file) {
   if (file.mimetype === 'video/mp4') return b.subarray(4, 8).toString() === 'ftyp'
   return false
 }
-api.post('/uploads', upload.single('file'), route(async (req, res) => { if (!req.file || !hasExpectedFileSignature(req.file)) return fail(res, 422, 'A valid JPEG, PNG, WebP, or MP4 file is required.'); const ext = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'video/mp4': '.mp4' }[req.file.mimetype]; const filename = `${crypto.randomUUID()}${ext}`, dir = path.resolve(process.env.UPLOAD_DIR || './uploads'); await fs.mkdir(dir, { recursive: true }); await fs.writeFile(path.join(dir, filename), req.file.buffer, { flag: 'wx' }); const url = `${process.env.BACKEND_URL || 'http://localhost:3001'}/uploads/${filename}`; await audit(req, 'media.uploaded', 'upload', filename); res.status(201).json({ url }) }))
+api.post('/uploads', upload.single('file'), route(async (req, res) => {
+  if (!req.file || !hasExpectedFileSignature(req.file)) return fail(res, 422, 'A valid JPEG, PNG, WebP, or MP4 file is required.')
+  const stored = await storeMedia(req.file)
+  const media = await pool.query('INSERT INTO media_objects(object_key,public_url,original_filename,mime_type,size_bytes,storage_provider,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id', [stored.objectKey, stored.publicUrl, path.basename(req.file.originalname || 'upload'), req.file.mimetype, req.file.size, stored.provider, req.user.id])
+  await audit(req, 'media.uploaded', 'media_object', media.rows[0].id)
+  res.status(201).json({ id: media.rows[0].id, url: stored.publicUrl })
+}))
 app.use('/api/v1', api)
-app.use((err, req, res, _next) => { console.error(JSON.stringify({ requestId: req.requestId, error: err.message, code: err.code })); if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') return fail(res, 413, 'File is too large.'); if (err.message === 'Origin not allowed') return fail(res, 403, 'Origin not allowed.'); if (err.code === '23505') return fail(res, 409, 'This value already exists.'); if (err.code === '23503') return fail(res, 409, 'This item is still in use.'); return fail(res, 500, 'An unexpected error occurred.') })
+app.use((err, req, res, _next) => { console.error(JSON.stringify({ requestId: req.requestId, error: err.message, code: err.code })); if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') return fail(res, 413, 'File is too large.'); if (err.message === 'Origin not allowed') return fail(res, 403, 'Origin not allowed.'); if (err.message === 'S3 media storage is not configured.' || err.message === 'S3 media storage is not fully configured.') return fail(res, 503, 'Media storage is not configured.'); if (err.code === '23505') return fail(res, 409, 'This value already exists.'); if (err.code === '23503') return fail(res, 409, 'This item is still in use.'); return fail(res, 500, 'An unexpected error occurred.') })
 export default app
