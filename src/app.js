@@ -19,7 +19,17 @@ if (required.length && process.env.NODE_ENV !== 'test') throw new Error(`Missing
 const { Pool } = pg
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL })
 const app = express()
-const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+function normalizeOrigin(value) {
+  if (!value) return null
+  const cleaned = value.trim().replace(/^['"]|['"]$/g, '')
+  try { return new URL(cleaned).origin } catch { return cleaned.replace(/\/+$/, '') }
+}
+const configuredFrontendOrigins = [process.env.FRONTEND_URL, ...(process.env.FRONTEND_ORIGINS || '').split(',')]
+  .map(normalizeOrigin)
+  .filter(Boolean)
+const fallbackFrontendOrigin = 'http://localhost:5173'
+const frontendUrl = configuredFrontendOrigins[0] || fallbackFrontendOrigin
+const allowedFrontendOrigins = new Set(configuredFrontendOrigins.length ? configuredFrontendOrigins : [fallbackFrontendOrigin])
 const cookieOptions = { httpOnly: true, secure: isProduction, sameSite: 'lax', path: '/api/v1', maxAge: Number(process.env.SESSION_TTL_HOURS || 24) * 3600_000 }
 const safeUrl = z.string().url().max(2048)
 const social = z.object({ handle: z.string().max(100).optional(), url: safeUrl.optional() }).strict()
@@ -29,7 +39,7 @@ const projectInput = z.object({ categoryId: z.string().uuid(), title: z.string()
 app.set('trust proxy', 1)
 app.use((req, res, next) => { req.requestId = crypto.randomUUID(); res.setHeader('X-Request-Id', req.requestId); const started = Date.now(); res.on('finish', () => console.info(JSON.stringify({ requestId: req.requestId, method: req.method, path: req.path, status: res.statusCode, durationMs: Date.now() - started }))); next() })
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' }, hsts: isProduction ? undefined : false }))
-app.use(cors({ origin(origin, done) { if (!origin || origin === frontendUrl) return done(null, true); return done(new Error('Origin not allowed')) }, credentials: true, methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'] }))
+app.use(cors({ origin(origin, done) { if (!origin || allowedFrontendOrigins.has(normalizeOrigin(origin))) return done(null, true); return done(new Error('Origin not allowed')) }, credentials: true, methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], allowedHeaders: ['Content-Type', 'X-CSRF-Token'] }))
 app.use(express.json({ limit: '1mb' })); app.use(cookieParser())
 app.use('/uploads', express.static(path.resolve(process.env.UPLOAD_DIR || './uploads'), { fallthrough: false, maxAge: isProduction ? '7d' : 0 }))
 
@@ -39,7 +49,7 @@ function hashToken(token) { return crypto.createHash('sha256').update(token).dig
 function token() { return crypto.randomBytes(32).toString('base64url') }
 async function audit(req, action, resourceType = null, resourceId = null) { await pool.query('INSERT INTO audit_logs(user_id,action,resource_type,resource_id,request_id,ip,user_agent) VALUES ($1,$2,$3,$4,$5,$6,$7)', [req.user?.id || null, action, resourceType, resourceId, req.requestId, req.ip, req.get('user-agent')?.slice(0, 500) || null]) }
 async function auth(req, res, next) { const raw = req.cookies.portfolio_session; if (!raw) return fail(res, 401, 'Authentication required.'); const result = await pool.query('SELECT u.id,u.email,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()', [hashToken(raw)]); if (!result.rowCount) return fail(res, 401, 'Authentication required.'); req.user = result.rows[0]; next() }
-function csrf(req, res, next) { if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next(); if (req.get('origin') !== frontendUrl || !req.cookies.portfolio_csrf || !crypto.timingSafeEqual(Buffer.from(req.cookies.portfolio_csrf), Buffer.from(req.get('x-csrf-token') || ''))) return fail(res, 403, 'Request could not be verified.'); next() }
+function csrf(req, res, next) { if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next(); if (!allowedFrontendOrigins.has(normalizeOrigin(req.get('origin'))) || !req.cookies.portfolio_csrf || !crypto.timingSafeEqual(Buffer.from(req.cookies.portfolio_csrf), Buffer.from(req.get('x-csrf-token') || ''))) return fail(res, 403, 'Request could not be verified.'); next() }
 function admin(req, res, next) { return ['owner', 'admin'].includes(req.user?.role) ? next() : fail(res, 403, 'Not authorized.') }
 function route(fn) { return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next) }
 async function sorted(table, where = '', params = []) { const result = await pool.query(`SELECT * FROM ${table} ${where} ORDER BY sort_order ASC`, params); return result.rows }
