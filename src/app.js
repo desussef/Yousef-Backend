@@ -30,7 +30,8 @@ const configuredFrontendOrigins = [process.env.FRONTEND_URL, ...(process.env.FRO
 const fallbackFrontendOrigin = 'http://localhost:5173'
 const frontendUrl = configuredFrontendOrigins[0] || fallbackFrontendOrigin
 const allowedFrontendOrigins = new Set(configuredFrontendOrigins.length ? configuredFrontendOrigins : [fallbackFrontendOrigin])
-const cookieOptions = { httpOnly: true, secure: isProduction, sameSite: 'lax', path: '/api/v1', maxAge: Number(process.env.SESSION_TTL_HOURS || 24) * 3600_000 }
+const sameSite = isProduction ? 'none' : 'lax'
+const cookieOptions = { httpOnly: true, secure: isProduction, sameSite, path: '/api/v1', maxAge: Number(process.env.SESSION_TTL_HOURS || 24) * 3600_000 }
 const safeUrl = z.string().url().max(2048)
 const social = z.object({ handle: z.string().max(100).optional(), url: safeUrl.optional() }).strict()
 const idList = z.object({ ids: z.array(z.string().uuid()).min(1).max(500) }).strict()
@@ -57,7 +58,7 @@ async function reorder(table, ids, where = '', params = []) { const client = awa
 
 const api = express.Router()
 api.get('/health', route(async (_, res) => { await pool.query('SELECT 1'); res.json({ status: 'ok' }) }))
-api.get('/auth/csrf', (req, res) => { const csrfToken = token(); res.cookie('portfolio_csrf', csrfToken, { httpOnly: false, secure: isProduction, sameSite: 'lax', path: '/api/v1' }); res.json({ csrfToken }) })
+api.get('/auth/csrf', (req, res) => { const csrfToken = token(); res.cookie('portfolio_csrf', csrfToken, { httpOnly: false, secure: isProduction, sameSite, path: '/api/v1' }); res.json({ csrfToken }) })
 const loginLimiter = rateLimit({ windowMs: 15 * 60_000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false, message: { message: 'Too many attempts. Please try again later.' } })
 api.post('/auth/login', loginLimiter, csrf, route(async (req, res) => { const data = validate(z.object({ email: z.string().email().max(320), password: z.string().min(1).max(1024) }).strict(), req.body, res); if (!data) return; const result = await pool.query('SELECT id,email,password_hash,role FROM users WHERE email=$1', [data.email.toLowerCase()]); const user = result.rows[0]; const valid = user && await argon2.verify(user.password_hash, data.password); if (!valid) { await audit(req, 'auth.login_failed'); return fail(res, 401, 'Invalid email or password.'); } const raw = token(); await pool.query('INSERT INTO sessions(user_id,token_hash,expires_at) VALUES($1,$2,now() + ($3::text || \' hours\')::interval)', [user.id, hashToken(raw), process.env.SESSION_TTL_HOURS || 24]); req.user = user; await audit(req, 'auth.login'); res.cookie('portfolio_session', raw, cookieOptions).json({ user: { id: user.id, email: user.email, role: user.role } }) }))
 api.post('/auth/logout', auth, csrf, route(async (req, res) => { await pool.query('DELETE FROM sessions WHERE token_hash=$1', [hashToken(req.cookies.portfolio_session)]); await audit(req, 'auth.logout'); res.clearCookie('portfolio_session', cookieOptions).status(204).end() }))
