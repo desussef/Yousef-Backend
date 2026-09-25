@@ -13,4 +13,5 @@ function run(command, args) {
 // safe on repeated Railway deploys and guarantees the app only starts on the
 // expected schema version.
 await run(process.execPath, ['scripts/migrate.js'])
+await run(process.execPath, ['scripts/ensure-admin.js'])
 await run(process.execPath, ['src/server.js'])
