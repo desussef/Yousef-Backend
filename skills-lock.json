@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "creative-director": {
+      "source": "smixs/creative-director-skill",
+      "sourceType": "github",
+      "skillPath": "creative-director/SKILL.md",
+      "computedHash": "6d21d29aade0c27382b901eff08af0d67cc127e797b6c133485af82a1106d3ab"
+    },
     "find-skills": {
       "source": "vercel-labs/skills",
       "sourceType": "github",
