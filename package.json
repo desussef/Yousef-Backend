@@ -8,6 +8,7 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed-content.js",
     "create-admin": "node scripts/create-admin.js",
+    "reset-admin-password": "node scripts/reset-admin-password.js",
     "test": "vitest run"
   },
   "dependencies": {
